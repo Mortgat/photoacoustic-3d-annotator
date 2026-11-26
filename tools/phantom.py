@@ -20,6 +20,8 @@ Output: one .npz file per volume, read by build_cohort.py:
     labels      int32   (X, Y, Z)   candidate components, 0 = background
     skin        float32 (X, Y)      skin height (z index), NaN where unknown
     spacing_mm  float64 (3,)
+    missed      bool    (X, Y, Z)   hairs present in the signal but missed by
+                                    the "detector" (truth for the tile search)
 and a JSON side file with the true nature of each candidate label.
 
 Usage:
@@ -140,6 +142,19 @@ def make_volume(rng: np.random.Generator):
         kinds[next_label] = "hair"
         next_label += 1
 
+    # --- missed hairs: in the signal, NOT in the candidates ----------------
+    # (what readers look for in the tile search step)
+    missed = np.zeros(SHAPE, np.int32)
+    for _ in range(8):
+        x0, y0 = rng.uniform(30, nx - 30, 2)
+        z0 = skin_at(x0, y0) - rng.uniform(6, 12)
+        ang = rng.uniform(0, 2 * np.pi)
+        pts = polyline((x0, y0, z0), (np.cos(ang), np.sin(ang), rng.uniform(0.5, 1.2)),
+                       rng.uniform(35, 60), 0.02, rng)
+        pts = pts[(pts[:, 2] < nz - 3) & (pts[:, 2] > 2)]
+        stamp_tube(vol, missed, pts, rng.uniform(0.8, 1.1), rng.uniform(0.9, 1.2), 1)
+    missed[lab > 0] = 0
+
     # --- one hair crossing a vessel: the detector merges them --------------
     v = vessel_paths[0]
     k = len(v) // 3
@@ -170,7 +185,7 @@ def make_volume(rng: np.random.Generator):
     speckle[zz.repeat(nx, 0).repeat(ny, 1) > skin[:, :, None] + 1] *= 0.4
     vol += speckle.astype(np.float32)
 
-    return vol.astype(np.float32), lab, skin, kinds
+    return vol.astype(np.float32), lab, skin, kinds, missed > 0
 
 
 def main():
@@ -184,12 +199,13 @@ def main():
     rng = np.random.default_rng(a.seed)
     for i in range(a.volumes):
         name = f"phantom{i + 1:02d}"
-        vol, lab, skin, kinds = make_volume(rng)
+        vol, lab, skin, kinds, missed = make_volume(rng)
         # saved with the annotator's convention: z grows INTO the tissue
         # (skin at low z, as acquired from above), so the z axis is flipped
         nz = vol.shape[2]
         np.savez_compressed(out / f"{name}.npz", signal=vol[:, :, ::-1], labels=lab[:, :, ::-1],
-                            skin=(nz - 1 - skin).astype(np.float32), spacing_mm=np.array(SPACING_MM))
+                            skin=(nz - 1 - skin).astype(np.float32), spacing_mm=np.array(SPACING_MM),
+                            missed=missed[:, :, ::-1])
         (out / f"{name}.truth.json").write_text(json.dumps({str(k): v for k, v in kinds.items()}, indent=1))
         print(f"{name}: {len(kinds)} candidates "
               f"({sum(v == 'hair' for v in kinds.values())} hairs, "

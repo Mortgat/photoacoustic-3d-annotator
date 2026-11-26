@@ -1,6 +1,6 @@
-import { CONFIG, dataUrl } from "./config.js";
-import { STR, STR_TRACE, STR_COMPLETE, STR_ARBITRATE, STR_ARB_EDIT, STR_TILE_REVIEW, STR_SECOND, STR_SECOND_TRACE } from "./strings.js";
-import { TUTORIAL, TRACE_TUTORIAL, SECOND_TUTORIAL, SECOND_TRACE_TUTORIAL } from "./tutorial.js";
+import { CONFIG, dataUrl } from "./config.js?v=20261126";
+import { STR, STR_TRACE, STR_COMPLETE, STR_ARBITRATE, STR_ARB_EDIT, STR_TILE_REVIEW, STR_SECOND, STR_SECOND_TRACE } from "./strings.js?v=20261126";
+import { TUTORIAL, TRACE_TUTORIAL, SECOND_TUTORIAL, SECOND_TRACE_TUTORIAL } from "./tutorial.js?v=20261126";
 
 /* ===========================================================================
    Etat

@@ -59,10 +59,10 @@ def base_step(spacing):
     return [max(1, int(round(ref / s))) for s in spacing]
 
 
-def crop_pooled(arr, origin, step, reducer):
-    """Box of BOX^3 cells starting at `origin`, each cell pooling step voxels.
-    Out-of-volume voxels count as 0."""
-    size = [BOX * s for s in step]
+def crop_pooled(arr, origin, step, reducer, nxy=BOX):
+    """Box of nxy x nxy x BOX cells starting at `origin`, each cell pooling
+    step voxels. Out-of-volume voxels count as 0."""
+    size = [nxy * step[0], nxy * step[1], BOX * step[2]]
     out = np.zeros(size, arr.dtype)
     src, dst = [], []
     for o, n, L in zip(origin, size, arr.shape):
@@ -70,20 +70,20 @@ def crop_pooled(arr, origin, step, reducer):
         src.append(slice(a, max(a, b)))
         dst.append(slice(a - o, a - o + max(0, b - a)))
     out[tuple(dst)] = arr[tuple(src)]
-    r = out.reshape(BOX, step[0], BOX, step[1], BOX, step[2])
+    r = out.reshape(nxy, step[0], nxy, step[1], BOX, step[2])
     return reducer(r, axis=(1, 3, 5))
 
 
-def encode_skin(skin, origin, step, spacing):
-    """Skin tile (BOX x BOX x 3) and the slab's position relative to the skin."""
+def encode_skin(skin, origin, step, spacing, nxy=BOX):
+    """Skin tile (nxy x nxy x 3) and the box's position relative to the skin."""
     X, Y = skin.shape
-    tile = np.zeros((BOX, BOX, 3), np.uint8)
-    zs = np.full((BOX, BOX), np.nan, np.float32)        # native skin height per column
-    for x in range(BOX):
+    tile = np.zeros((nxy, nxy, 3), np.uint8)
+    zs = np.full((nxy, nxy), np.nan, np.float32)        # native skin height per column
+    for x in range(nxy):
         cx = origin[0] + x * step[0] + step[0] // 2
         if not 0 <= cx < X:
             continue
-        for y in range(BOX):
+        for y in range(nxy):
             cy = origin[1] + y * step[1] + step[1] // 2
             if 0 <= cy < Y:
                 zs[x, y] = skin[cx, cy]
@@ -106,13 +106,15 @@ def encode_skin(skin, origin, step, spacing):
 
 
 def slab_tiles(vol_rgb, skin_tile):
-    """(BOX, BOX, BOX, 3) volume indexed x, y, z -> one atlas strip."""
-    strip = np.zeros((ROWS * BOX, COLS * BOX, 3), np.uint8)
+    """(n, n, BOX, 3) volume indexed x, y, z -> one atlas strip of n x n tiles
+    (n = BOX for a slab, the halo size for a search tile)."""
+    n = vol_rgb.shape[0]
+    strip = np.zeros((ROWS * n, COLS * n, 3), np.uint8)
     for z in range(BOX):
         r, c = divmod(z, COLS)
-        strip[r * BOX:(r + 1) * BOX, c * BOX:(c + 1) * BOX] = vol_rgb[:, :, z].transpose(1, 0, 2)
+        strip[r * n:(r + 1) * n, c * n:(c + 1) * n] = vol_rgb[:, :, z].transpose(1, 0, 2)
     r, c = divmod(SKIN_SLOT, COLS)
-    strip[r * BOX:(r + 1) * BOX, c * BOX:(c + 1) * BOX] = skin_tile
+    strip[r * n:(r + 1) * n, c * n:(c + 1) * n] = skin_tile
     return strip
 
 
@@ -127,9 +129,147 @@ def downsample_max(a, k):
     return a.reshape(X // k, k, Y // k, k, *a.shape[2:]).max(axis=(1, 3))
 
 
+def build_trace(paths, out, a):
+    """Search step: tiles of the field of view where readers trace the objects
+    the detector MISSED. Each tile is a 48 x 48 window inside a larger margin
+    (the halo, 144 x 144 cells by default) that the reader can pan through.
+    Detected candidates are drawn as "other shapes" (B), so that nobody traces
+    them again; G stays empty (no candidate to judge)."""
+    halo = a.halo
+    rng = np.random.default_rng(a.seed)
+    for sub in ("halo", "ctx", "champs"):
+        (out / sub).mkdir(parents=True, exist_ok=True)
+    tiles, fields, truth, shape_xy, strips, ctx_imgs = [], {}, {}, None, [], []
+    first_step = None
+    for path in paths:
+        d = np.load(path)
+        name = path.stem
+        sig, lab, skin = d["signal"].astype(np.float32), d["labels"], d["skin"].astype(np.float32)
+        spacing = np.asarray(d["spacing_mm"], float)
+        missed = d["missed"] if "missed" in d.files else None
+        X, Y, Z = sig.shape
+        shape_xy = shape_xy or [X, Y]
+        if [X, Y] != shape_xy:
+            raise SystemExit(f"{name}: all volumes must share the same (X, Y) size")
+        step = base_step(spacing)                       # search tiles are read at full resolution
+        first_step = first_step or step
+        if X < halo * step[0] or Y < halo * step[1]:
+            raise SystemExit(f"{name}: volume smaller than the halo ({halo} cells)")
+        ceiling = float(np.percentile(sig, 99.95)) or 1.0
+        r8 = np.clip(sig / ceiling * 255, 0, 255).astype(np.uint8)
+        detected = lab > 0
+
+        fr = r8.max(axis=2)
+        fg = np.where(detected.any(axis=2), 255, 0).astype(np.uint8)
+        Image.fromarray(to_image(np.stack([fr, fg, np.zeros_like(fr)], -1))).save(
+            out / "champs" / f"{name}.webp", lossless=True)
+        fields[name] = {"file": f"champs/{name}.webp", "shape_xy": [X, Y]}
+
+        side, depth = BOX * step[0], BOX * step[2]
+        cands = []
+        for tx in range(0, X - side + 1, side):
+            for ty in range(0, Y - side + 1, side):
+                sk = skin[tx:tx + side, ty:ty + side]
+                if np.isnan(sk).mean() > 0.5:
+                    continue
+                # `above` of the box depth in the air (low z), the rest under the skin
+                oz = int(np.nanmedian(sk) - a.above * depth)
+                oz = min(max(oz, 0), max(Z - depth, 0))
+                win = r8[tx:tx + side, ty:ty + side, oz:oz + depth]
+                free = ~detected[tx:tx + side, ty:ty + side, oz:oz + depth]
+                cands.append((tx, ty, oz, int(((win >= 160) & free).sum())))
+        # draw tiles, favouring bright undetected signal (but not only)
+        w = np.array([1.0 + min(c[3], 200) / 20 for c in cands])
+        k = min(a.tiles, len(cands))
+        picked = sorted(rng.choice(len(cands), size=k, replace=False, p=w / w.sum()))
+        for n, i in enumerate(picked):
+            tx, ty, oz, bright = cands[i]
+            hx = int(min(max(tx - (halo - BOX) // 2 * step[0], 0), X - halo * step[0]))
+            hy = int(min(max(ty - (halo - BOX) // 2 * step[1], 0), Y - halo * step[1]))
+            wx, wy = (tx - hx) // step[0], (ty - hy) // step[1]
+            R = crop_pooled(r8, [hx, hy, oz], step, np.max, halo)
+            B = np.where(crop_pooled(detected, [hx, hy, oz], step, np.any, halo), 255, 0).astype(np.uint8)
+            skin_tile, _, _ = encode_skin(skin, [hx, hy, oz], step, spacing, halo)
+            _, skin_state, gap = encode_skin(skin, [tx, ty, oz], step, spacing)
+            strips.append(slab_tiles(np.stack([R, np.zeros_like(R), B], -1), skin_tile))
+            cr = r8[:, :, oz:oz + depth].max(axis=2)
+            z0 = np.zeros_like(cr)
+            ctx_imgs.append(to_image(downsample_max(np.stack([cr, z0, z0], -1), REDUCTION)))
+            tid = f"T{name}-{n:04d}"
+            tiles.append({
+                "slab_id": tid, "volume": name, "rank": 0, "draw_rank": 0, "page": 1, "anchor": False,
+                "spacing_mm": [float(s * m) for s, m in zip(spacing, step)],
+                "native_spacing_mm": [float(s) for s in spacing],
+                "origin_xyz": [int(tx), int(ty), int(oz)], "step_xyz": step, "factor": 1,
+                "contained": True, "voxels_sampled": 0, "voxels_native": 0,
+                "display_ceiling": ceiling, "tutorial": False,
+                "inclusion_probability": round(float(min(1.0, w[i] / w.sum() * k)), 4),
+                "edge_mm": 0.0, "n_judgeable": 0, "bright_cluster": bright,
+                "halo_origin_xyz": [hx, hy, int(oz)], "halo_size": halo,
+                "window_xy": [int(wx), int(wy)],
+                "skin_state": skin_state, "skin_gap_mm": round(gap, 3),
+                "halo_pack": "", "halo_slot": 0, "ctx_pack": "", "ctx_slot": 0,
+            })
+            if missed is not None:
+                truth[tid] = int(missed[tx:tx + side, ty:ty + side, oz:oz + depth].sum())
+        print(f"{name}: {k} search tiles")
+
+    order = rng.permutation(len(tiles))
+    for rank, i in enumerate(order):
+        tiles[i]["rank"] = tiles[i]["draw_rank"] = int(rank)
+    if tiles:                                           # one practice tile, outside the measure
+        min(tiles, key=lambda t: t["rank"]).update(tutorial=True, rank=-1, draw_rank=-1)
+    per_pack = 4                                        # 4 halos per image (4 x 1008 px tall)
+    by_rank = sorted(range(len(tiles)), key=lambda i: tiles[i]["rank"])
+    ix, iy = shape_xy[0] // REDUCTION, shape_xy[1] // REDUCTION
+    for p in range(math.ceil(len(by_rank) / per_pack)):
+        members = by_rank[p * per_pack:(p + 1) * per_pack]
+        sheet = np.zeros((per_pack * ROWS * halo, COLS * halo, 3), np.uint8)
+        for slot, i in enumerate(members):
+            sheet[slot * ROWS * halo:(slot + 1) * ROWS * halo] = strips[i]
+            tiles[i].update(halo_pack=f"halo/halo_{p:04d}.webp", halo_slot=slot)
+        Image.fromarray(sheet).save(out / "halo" / f"halo_{p:04d}.webp", lossless=True)
+    for p in range(math.ceil(len(by_rank) / PER_PACK)):
+        members = by_rank[p * PER_PACK:(p + 1) * PER_PACK]
+        csheet = np.zeros((PER_PACK * iy, ix, 3), np.uint8)
+        for slot, i in enumerate(members):
+            csheet[slot * iy:(slot + 1) * iy] = ctx_imgs[i][:iy, :ix]
+            tiles[i].update(ctx_pack=f"ctx/ctx_{p:04d}.webp", ctx_slot=slot)
+        Image.fromarray(csheet).save(out / "ctx" / f"ctx_{p:04d}.webp", lossless=True)
+
+    tiles.sort(key=lambda t: t["rank"])
+    cohort = {
+        "contract": "photoacoustic-annotation-cohort.v1", "mode": "trace",
+        "built_at": datetime.now().isoformat(timespec="seconds"), "seed": a.seed,
+        "registry": "build_cohort", "box": BOX, "atlas_cols": COLS, "atlas_rows": ROWS,
+        "skin_slot": SKIN_SLOT, "per_pack": per_pack, "signal_bits": 8,
+        "step_xyz_base": first_step, "volumes": [p.stem for p in paths], "slabs": tiles,
+        "fields": fields,
+        "field_channels": "R signal (same ceiling as the tiles) - G detected candidates in the column",
+        "field_orientation": "row 0 = Y max, column 0 = X min",
+        "page": 1, "pages": 1,
+        "design": {"tiles_per_volume": a.tiles, "halo_voxels": halo, "above_fraction": a.above,
+                   "weight": "1 + min(bright undetected voxels, 200) / 20"},
+        "note": "Tiles favour bright undetected signal; detected candidates are drawn as other shapes.",
+        "context": {"reduction": REDUCTION, "shape_xy": shape_xy, "image_xy": [ix, iy],
+                    "channels": "R signal over the tile's exact depth window",
+                    "orientation": "row 0 = Y max"},
+    }
+    (out / "cohorte.json").write_text(json.dumps(cohort, ensure_ascii=False))
+    if a.truth_out and truth:
+        Path(a.truth_out).parent.mkdir(parents=True, exist_ok=True)
+        Path(a.truth_out).write_text(json.dumps(truth, indent=1, sort_keys=True))
+    print(f"search cohort: {len(tiles)} tiles -> {out}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("volumes", nargs="+", help=".npz volumes (globs accepted)")
+    ap.add_argument("--mode", choices=["review", "trace"], default="review",
+                    help="review: one block per candidate; trace: search tiles for missed objects")
+    ap.add_argument("--tiles", type=int, default=20, help="trace mode: tiles drawn per volume")
+    ap.add_argument("--halo", type=int, default=144, help="trace mode: margin size, in display cells")
+    ap.add_argument("--above", type=float, default=0.6, help="trace mode: share of the box depth above the skin")
     ap.add_argument("--out", required=True, help="output folder, e.g. app/data/demo")
     ap.add_argument("--seed", type=int, default=20261125)
     ap.add_argument("--anchors", type=int, default=4, help="slabs every reader sees first")
@@ -142,6 +282,8 @@ def main():
     if not paths:
         raise SystemExit("no input volume")
     out = Path(a.out)
+    if a.mode == "trace":
+        return build_trace(paths, out, a)
     for sub in ("atlas", "ctx", "champs"):
         (out / sub).mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(a.seed)

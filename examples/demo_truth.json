@@ -21,8 +21,8 @@
  "phantom01-00020": "noise",
  "phantom01-00021": "noise",
  "phantom01-00022": "noise",
+ "phantom01-00023": "noise",
  "phantom01-00024": "noise",
- "phantom01-00025": "noise",
  "phantom01-00026": "noise",
  "phantom01-00027": "noise",
  "phantom01-00028": "noise",
@@ -53,7 +53,6 @@
  "phantom02-00024": "noise",
  "phantom02-00025": "noise",
  "phantom02-00026": "noise",
- "phantom02-00027": "noise",
  "phantom02-00028": "noise",
  "phantom02-00029": "noise"
 }

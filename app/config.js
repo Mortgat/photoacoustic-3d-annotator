@@ -20,9 +20,12 @@ const dataName = (params.get("data") || "demo").replace(/[^A-Za-z0-9_-]/g, "");
 export const CONFIG = {
   dataBase: `data/${dataName}/`,
   author: params.get("author") || "author",
+  /* Demo: step 1 = review of detected candidates, step 2 = search tiles.
+     Relative links, so they work locally and on GitHub Pages alike.
+     Set `review: null, search: []` for a single-page deployment. */
   pages: {
-    review: null,     /* e.g. "https://example.org/annotator/?data=step1" */
-    search: [],       /* e.g. ["https://example.org/annotator/?data=step2-p1"] */
+    review: "?data=demo",
+    search: ["?data=demo-search"],
   },
 };
 
