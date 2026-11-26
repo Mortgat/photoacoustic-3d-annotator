@@ -1,0 +1,12 @@
+# generated volumes and collected answers (may be large or private)
+phantom_data/
+*.npz
+exports/
+answers.csv
+# never commit real cohorts: keep app/data/ for synthetic or public data only
+app/data/*
+!app/data/demo/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
