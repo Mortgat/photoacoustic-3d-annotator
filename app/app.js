@@ -1,6 +1,6 @@
-import { CONFIG, dataUrl } from "./config.js?v=20261126";
-import { STR, STR_TRACE, STR_COMPLETE, STR_ARBITRATE, STR_ARB_EDIT, STR_TILE_REVIEW, STR_SECOND, STR_SECOND_TRACE } from "./strings.js?v=20261126";
-import { TUTORIAL, TRACE_TUTORIAL, SECOND_TUTORIAL, SECOND_TRACE_TUTORIAL } from "./tutorial.js?v=20261126";
+import { CONFIG, dataUrl } from "./config.js?v=20261126b";
+import { STR, STR_TRACE, STR_COMPLETE, STR_ARBITRATE, STR_ARB_EDIT, STR_TILE_REVIEW, STR_SECOND, STR_SECOND_TRACE } from "./strings.js?v=20261126b";
+import { TUTORIAL, TRACE_TUTORIAL, SECOND_TUTORIAL, SECOND_TRACE_TUTORIAL } from "./tutorial.js?v=20261126b";
 
 /* ===========================================================================
    Etat
@@ -1549,11 +1549,54 @@ function columnAction(x, y, action, inverse, changes) {
       if (solidNow(i) || !touchesSolid(x, y, z)) continue;
       if (vol[i * 4] > best) { best = vol[i * 4]; bz = z; }
     }
-    if (bz < 0) return;
+    if (bz < 0) { addDiagonal(x, y, changes); return; }
     const i = lin(x, y, bz);
     /* Un voxel du candidat qu'on avait retire redevient candidat, pas « ajoute ». */
     setOne(i, isCand(i) ? E_NONE : E_ADD, changes);
   }
+}
+/* Pas en diagonale. Un poil oblique avance souvent d'une case en x ET en y : la
+   colonne visee ne touche alors la forme que par une arete ou un coin, et
+   l'ajout restait sans effet un clic sur deux. On prend le voxel le plus
+   brillant de la colonne qui touche la forme en connexite 26, plus le ou les
+   voxels de liaison les plus brillants, pour garder la forme d'un seul tenant
+   en connexite 6 (celle du registre). */
+function bridgeTo(x, y, z, dx, dy, dz) {
+  const axes = [[dx, 0, 0], [0, dy, 0], [0, 0, dz]].filter(a => a[0] || a[1] || a[2]);
+  const orders = axes.length === 2 ? [[0, 1], [1, 0]]
+    : [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+  let best = null, bestSig = -1;
+  for (const order of orders) {
+    const path = [];
+    let p = [x, y, z], ok = true, low = Infinity;
+    for (const k of order.slice(0, -1)) {
+      p = [p[0] + axes[k][0], p[1] + axes[k][1], p[2] + axes[k][2]];
+      const i = lin(...p);
+      if (!inBox(...p) || isOther(i) || edit[i] === E_REM || edit[i] === E_CUT) { ok = false; break; }
+      path.push(i); low = Math.min(low, vol[i * 4]);
+    }
+    if (ok && low > bestSig) { bestSig = low; best = path; }
+  }
+  return best;
+}
+function addDiagonal(x, y, changes) {
+  let best = -1, bi = -1, link = null;
+  for (let z = 0; z < BOX; z++) {
+    const i = lin(x, y, z);
+    if (solidNow(i) || isOther(i) || edit[i] === E_CUT || vol[i * 4] <= best) continue;
+    let br = null, brSig = -1;
+    for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if ((dx !== 0) + (dy !== 0) + (dz !== 0) < 2) continue;
+      if (!inBox(x + dx, y + dy, z + dz) || !solidNow(lin(x + dx, y + dy, z + dz))) continue;
+      const path = bridgeTo(x, y, z, dx, dy, dz);
+      if (!path) continue;
+      const s = Math.min(...path.map(k => vol[k * 4]));
+      if (s > brSig) { brSig = s; br = path; }
+    }
+    if (br) { best = vol[i * 4]; bi = i; link = br; }
+  }
+  if (bi < 0) return;
+  for (const k of link.concat(bi)) if (!solidNow(k)) setOne(k, isCand(k) ? E_NONE : E_ADD, changes);
 }
 /* ---- Trace : suivre un poil de clic en clic -------------------------------
    Le trace d'une tuile vit dans le repere de sa MARGE (96 x 96 x 48 : la tuile
@@ -4872,6 +4915,10 @@ function paintModes() {
     $("dpad").hidden = false; $("g-skip").hidden = true;
     tool = "b1";
   }
+  /* Le bouton presse dans index.html est celui de l'etape 1 (1 vx) : sans cette
+     synchronisation, la recherche affichait « 1 vx » alors que l'outil actif
+     etait le traceur. */
+  setToolUI();
   applyLang();
   try { if (localStorage.getItem("hcr:todo") === "0") setTodoOpen(false); } catch {}
   const prev = loadReader();

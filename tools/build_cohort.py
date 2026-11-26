@@ -20,7 +20,8 @@ All volumes of a cohort must share the same (X, Y) size.
 
 Slab encoding (read by app.js, decodeSlab):
     48 depth planes tiled 8 x 6 in an 8 x 7 grid of 48 x 48 tiles;
-    R = signal (0-255, divided by the volume's display ceiling),
+    R = sqrt(signal / display ceiling) * 255: the square root spreads the
+        dim range, and app.js squares it back (sigOf) for the tracer;
     G = the candidate being judged, B = other candidates (255 / 0);
     tile 48 = skin map: depth on 16 bits in R/G, B = 255 inside the box,
     128 present but outside, 0 absent.
@@ -118,6 +119,13 @@ def slab_tiles(vol_rgb, skin_tile):
     return strip
 
 
+def encode_signal(sig, ceiling):
+    """Signal -> 8-bit R channel: square root of the signal divided by the
+    volume's display ceiling. app.js expects this coding: its tracer squares
+    R back (sigOf) before thresholding at half the local maximum."""
+    return np.rint(np.sqrt(np.clip(sig / ceiling, 0, 1)) * 255).astype(np.uint8)
+
+
 def to_image(xy):
     """(X, Y[, C]) array -> image rows: row 0 = Y max, column 0 = X min."""
     return np.flipud(np.swapaxes(xy, 0, 1))
@@ -156,7 +164,7 @@ def build_trace(paths, out, a):
         if X < halo * step[0] or Y < halo * step[1]:
             raise SystemExit(f"{name}: volume smaller than the halo ({halo} cells)")
         ceiling = float(np.percentile(sig, 99.95)) or 1.0
-        r8 = np.clip(sig / ceiling * 255, 0, 255).astype(np.uint8)
+        r8 = encode_signal(sig, ceiling)
         detected = lab > 0
 
         fr = r8.max(axis=2)
@@ -304,7 +312,7 @@ def main():
         if path == paths[0]:
             first_base = base
         ceiling = float(np.percentile(sig, 99.95)) or 1.0
-        r8 = np.clip(sig / ceiling * 255, 0, 255).astype(np.uint8)
+        r8 = encode_signal(sig, ceiling)
 
         # whole-volume projection: R signal, G every candidate in the column
         fr = r8.max(axis=2)

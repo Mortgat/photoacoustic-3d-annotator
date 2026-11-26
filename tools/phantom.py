@@ -176,12 +176,12 @@ def make_volume(rng: np.random.Generator):
 
     # --- skin sheet, background, blur ---------------------------------------
     zz = np.arange(nz)[None, None, :]
-    sheet = 0.28 * np.exp(-((zz - skin[:, :, None]) / 1.5) ** 2)
+    sheet = 0.12 * np.exp(-((zz - skin[:, :, None]) / 1.5) ** 2)
     vol = np.maximum(vol, sheet.astype(np.float32))
     vol = ndi.gaussian_filter(vol, (0.7, 0.7, 1.2))
     # speckle: smoothed, low-amplitude noise (PA background), quieter in the air
     speckle = ndi.gaussian_filter(rng.normal(0, 1, SHAPE).astype(np.float32), (1.2, 1.2, 2.0))
-    speckle = np.abs(speckle) * (0.03 / (speckle.std() + 1e-6))
+    speckle = np.abs(speckle) * (0.02 / (speckle.std() + 1e-6))
     speckle[zz.repeat(nx, 0).repeat(ny, 1) > skin[:, :, None] + 1] *= 0.4
     vol += speckle.astype(np.float32)
 

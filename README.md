@@ -10,14 +10,14 @@ A browser-based tool to build a **human ground truth of hairs, vessels and noise
 
 ## The two steps
 
-**Step 1 — Review detected shapes.** Each *block* (a 48³ voxel box) is centred on one automatically detected candidate. The reader locates it relative to the skin, decides its **nature** (hair, vessel, noise, + "not sure"), checks its **outline** and fixes it if needed (add / erase voxels, fill gaps, trace along the signal, or **cut** a candidate that merges several objects), then confirms.
+**Step 1 — Review detected shapes.** Each *block* (a 48³ voxel box) is centred on one automatically detected candidate. The reader locates it relative to the skin, decides its **nature** (hair, vessel or noise, with a "not sure" flag), checks its **outline** and fixes it if needed (add / erase voxels, fill gaps, trace along the signal, or **cut** a candidate that merges several objects), then confirms.
 
-**Step 2 — Search for missed hairs.** Each *tile* is a 48 × 48 window of the field of view, sampled with priority to bright undetected signal. Shapes already detected are shown in brown; the reader **traces the hairs the method missed** inside the red square, voxel path by voxel path. The tile comes with a wider margin (144 × 144) that the reader pans through with the arrows, so that a hair crossing the edge of the square can be followed to its end instead of being cut.
+**Step 2 — Search for missed hairs.** Each *tile* is a 48 × 48 window of the field of view, sampled with priority to bright undetected signal. Shapes already detected are shown in brown; the reader **traces the hairs the method missed** inside the red square, click by click: between two clicks, a tracer follows the signal. The tile comes with a wider margin (144 × 144) that the reader pans through with the arrows, so that a hair crossing the edge of the square can be followed to its end instead of being cut.
 
 Features:
 
-- **WebGL2 ray-marched volume view** (signal / voxels / editable blocks), with the estimated skin surface and neighbouring shapes, plus a **maximum-intensity projection** that zooms out to the whole field of view;
-- **voxel tools**: 1- and 7-voxel brush, eraser, bucket fill, gap filling, signal-following tracer, cuts into parts;
+- **WebGL2 ray-marched volume view** (signal, shape or editable blocks), with the estimated skin surface and neighbouring shapes, plus a **maximum-intensity projection** that zooms out to the whole field of view;
+- **voxel tools**: 1- and 7-voxel brushes, eraser, bucket fill, gap filling, signal-following tracer, cuts into parts;
 - **interactive tutorials** with practice blocks, **English / Japanese** interface;
 - per-reader identifiers, resumable sessions, reading order with anchor blocks;
 - answers saved **locally in the reader's browser** and **exported as JSON**, then merged with `tools/collect_answers.py`. Nothing is sent to any server.
@@ -57,7 +57,7 @@ Requirements: Python 3.10+, `pip install -r requirements.txt` (NumPy, SciPy, Pil
 
 3. Point `app/config.js` (`pages.review`, `pages.search`) at `?data=study1` and `?data=study1-search`, and open `http://localhost:8000/?data=study1`.
 
-In step 1, each candidate becomes one block; the box step (1, 2 or 4 voxels per display cell) is chosen so that the candidate fits. In step 2, tiles are drawn from a grid over the field of view, with a depth window placed around the skin. The signal is max-pooled, divided by a per-volume display ceiling and stored as lossless WebP atlases. See the docstring of [`tools/build_cohort.py`](tools/build_cohort.py) for the exact encoding.
+In step 1, each candidate becomes one block; the box step (1, 2 or 4 voxels per display cell) is chosen so that the candidate fits. In step 2, tiles are drawn from a grid over the field of view, with a depth window placed around the skin. The signal is max-pooled, divided by a per-volume display ceiling, coded on 8 bits as its square root (which spreads the dim range) and stored as lossless WebP atlases. See the docstring of [`tools/build_cohort.py`](tools/build_cohort.py) for the exact encoding.
 
 ### Recreate the demo data
 
