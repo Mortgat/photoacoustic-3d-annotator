@@ -6,6 +6,7 @@ answers.csv
 # never commit real cohorts: keep app/data/ for synthetic or public data only
 app/data/*
 !app/data/demo/
+!app/data/demo-search/
 __pycache__/
 *.pyc
 .DS_Store
